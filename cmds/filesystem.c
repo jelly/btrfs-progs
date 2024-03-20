@@ -296,35 +296,70 @@ static void splice_device_list(struct list_head *seed_devices,
 	list_splice(seed_devices, all_devices);
 }
 
-static void print_filesystem_info(char *label, char uuidbuf[BTRFS_UUID_UNPARSED_SIZE],
-				u64 bytes_used, u64 num_devices,
-				unsigned unit_mode)
-{
-	if (label)
-		pr_default("Label: '%s' ", label);
-	else
-		pr_default("Label: none ");
+static const struct rowspec filesystem_show_data_rowspec[] = {
+	{ .key = "label", .fmt = "%s", .out_json = "label" },
+	{ .key = "uuid", .fmt = "%s", .out_json = "uuid" },
+	{ .key = "num_devices", .fmt = "%llu", .out_json = "total_devices" },
+	{ .key = "used", .fmt = "%llu", .out_json = "used" },
+	/* device list */
+	{ .key = "devid", .fmt = "%llu", .out_json = "devid" },
+	{ .key = "size", .fmt = "%llu", .out_json = "size" },
+	{ .key = "path", .fmt = "%s", .out_json = "path" },
+	{ .key = "missing", .fmt = "bool", .out_json = "missing" },
+	ROWSPEC_END
+};
 
-	pr_default(" uuid: %s\n\tTotal devices %llu FS bytes used %s\n", uuidbuf,
-			num_devices,
-			pretty_size_mode(bytes_used, unit_mode));
+static void print_filesystem_info(struct format_ctx *fctx,
+				       char *label, char uuidbuf[BTRFS_UUID_UNPARSED_SIZE],
+				       u64 bytes_used, u64 num_devices,
+				       unsigned unit_mode)
+{
+	if (bconf.output_format == CMD_FORMAT_JSON) {
+		if (label)
+			fmt_print(fctx, "label", label);
+
+		fmt_print(fctx, "uuid", uuidbuf);
+		fmt_print(fctx, "num_devices", num_devices);
+		fmt_print(fctx, "used", bytes_used);
+	} else {
+		if (label)
+			pr_default("Label: '%s' ", label);
+		else
+			pr_default("Label: none ");
+
+		pr_default(" uuid: %s\n\tTotal devices %llu FS bytes used %s\n", uuidbuf,
+				num_devices,
+				pretty_size_mode(bytes_used, unit_mode));
+	}
 }
 
-static void print_filesystem_device(u64 devid, u64 total_bytes, u64 bytes_used,
+static void print_filesystem_device(struct format_ctx *fctx,
+				u64 devid, u64 total_bytes, u64 bytes_used,
 				char *path,
 				bool missing,
 				unsigned unit_mode)
 {
-	pr_default("\tdevid %4llu size %s used %s path %s%s\n",
-	       devid,
-	       pretty_size_mode(total_bytes, unit_mode),
-	       pretty_size_mode(bytes_used, unit_mode),
-	       path,
-	       missing ? " MISSING":  "");
+	if (bconf.output_format == CMD_FORMAT_JSON) {
+		fmt_print_start_group(fctx, NULL, JSON_TYPE_MAP);
+		fmt_print(fctx, "devid", devid);
+		fmt_print(fctx, "size", total_bytes);
+		fmt_print(fctx, "used", bytes_used);
+		fmt_print(fctx, "path", path);
+		fmt_print(fctx, "missing", missing);
+		fmt_print_end_group(fctx, NULL);
+	} else {
+		pr_default("\tdevid %4llu size %s used %s path %s%s\n",
+		       devid,
+		       pretty_size_mode(total_bytes, unit_mode),
+		       pretty_size_mode(bytes_used, unit_mode),
+		       path,
+		       missing ? " MISSING":  "");
+	}
 }
 
 static void print_devices(struct btrfs_fs_devices *fs_devices,
-			  u64 *devs_found, unsigned unit_mode)
+			  u64 *devs_found, unsigned unit_mode,
+			  struct format_ctx *fctx)
 {
 	struct btrfs_device *device;
 	struct btrfs_fs_devices *cur_fs;
@@ -340,22 +375,24 @@ static void print_devices(struct btrfs_fs_devices *fs_devices,
 
 	list_sort(NULL, all_devices, cmp_device_id);
 	list_for_each_entry(device, all_devices, dev_list) {
-		print_filesystem_device(device->devid,
-					device->total_bytes, device->bytes_used,
-					device->name,
-					false,
-					unit_mode);
+		print_filesystem_device(fctx, device->devid,
+					 device->total_bytes, device->bytes_used,
+					 device->name,
+					 false,
+					 unit_mode);
 		(*devs_found)++;
 	}
 }
 
-static void print_one_uuid(struct btrfs_fs_devices *fs_devices,
+static void print_one_uuid(struct format_ctx *fctx,
+			   struct btrfs_fs_devices *fs_devices,
 			   unsigned unit_mode)
 {
 	char uuidbuf[BTRFS_UUID_UNPARSED_SIZE];
 	struct btrfs_device *device;
 	u64 devs_found = 0;
 	u64 total;
+	const bool json = bconf.output_format == CMD_FORMAT_JSON;
 
 	if (add_seen_fsid(fs_devices->fsid, seen_fsid_hash, -1))
 		return;
@@ -365,14 +402,35 @@ static void print_one_uuid(struct btrfs_fs_devices *fs_devices,
 			    dev_list);
 	total = device->total_devs;
 
-	print_filesystem_info(device->label && device->label[0] ? device->label : NULL, uuidbuf,
-			      device->super_bytes_used, total,
-			      unit_mode);
+	if (json)
+		fmt_print_start_group(fctx, NULL, JSON_TYPE_MAP);
 
-	print_devices(fs_devices, &devs_found, unit_mode);
+	print_filesystem_info(fctx, device->label && device->label[0] ? device->label : NULL, uuidbuf,
+				   device->super_bytes_used, total,
+				   unit_mode);
 
-	if (devs_found < total)
-		pr_default("\t*** Some devices missing\n");
+	if (json)
+		fmt_print_start_group(fctx, "device-list", JSON_TYPE_ARRAY);
+
+	print_devices(fs_devices, &devs_found, unit_mode, fctx);
+
+	if (devs_found < total) {
+		if (json) {
+			// TODO: Iterate over devs_found to find the missing device ids?
+			print_filesystem_device(fctx, 0,
+						 0, 0,
+						 "",
+						 true,
+						 unit_mode);
+		} else {
+			pr_default("\t*** Some devices missing\n");
+		}
+	}
+
+	if (json) {
+		fmt_print_end_group(fctx, "device-list");
+		fmt_print_end_group(fctx, NULL);
+	}
 }
 
 /* adds up all the used spaces as reported by the space info ioctl
@@ -386,7 +444,8 @@ static u64 calc_used_bytes(struct btrfs_ioctl_space_args *si)
 	return ret;
 }
 
-static int print_one_fs(struct btrfs_ioctl_fs_info_args *fs_info,
+static int print_one_fs(struct format_ctx *fctx,
+		struct btrfs_ioctl_fs_info_args *fs_info,
 		struct btrfs_ioctl_dev_info_args *dev_info,
 		struct btrfs_ioctl_space_args *space_info,
 		char *label, unsigned unit_mode)
@@ -396,6 +455,7 @@ static int print_one_fs(struct btrfs_ioctl_fs_info_args *fs_info,
 	char uuidbuf[BTRFS_UUID_UNPARSED_SIZE];
 	struct btrfs_ioctl_dev_info_args *tmp_dev_info;
 	int ret;
+	const bool json = bconf.output_format == CMD_FORMAT_JSON;
 
 	ret = add_seen_fsid(fs_info->fsid, seen_fsid_hash, -1);
 	if (ret == -EEXIST)
@@ -403,10 +463,16 @@ static int print_one_fs(struct btrfs_ioctl_fs_info_args *fs_info,
 	else if (ret)
 		return ret;
 
+	if (json)
+		fmt_print_start_group(fctx, NULL, JSON_TYPE_MAP);
+
 	uuid_unparse(fs_info->fsid, uuidbuf);
-	print_filesystem_info(label && *label ? label : NULL, uuidbuf,
-				calc_used_bytes(space_info), fs_info->num_devices,
-				unit_mode);
+	print_filesystem_info(fctx, label && *label ? label : NULL, uuidbuf,
+				   calc_used_bytes(space_info), fs_info->num_devices,
+				   unit_mode);
+
+	if (json)
+		fmt_print_start_group(fctx, "device-list", JSON_TYPE_ARRAY);
 
 	for (i = 0; i < fs_info->num_devices; i++) {
 		char *canonical_path, *path;
@@ -416,7 +482,8 @@ static int print_one_fs(struct btrfs_ioctl_fs_info_args *fs_info,
 		/* Add check for missing devices even mounted */
 		fd = open((char *)tmp_dev_info->path, O_RDONLY);
 		if (fd < 0) {
-			print_filesystem_device(tmp_dev_info->devid,
+			print_filesystem_device(fctx,
+						tmp_dev_info->devid,
 						0, 0,
 						(char *)tmp_dev_info->path,
 						true,
@@ -429,19 +496,24 @@ static int print_one_fs(struct btrfs_ioctl_fs_info_args *fs_info,
 			path = (char *)tmp_dev_info->path;
 		else
 			path = canonical_path;
-		print_filesystem_device(tmp_dev_info->devid,
-					tmp_dev_info->total_bytes, tmp_dev_info->bytes_used,
-					path,
-					false,
-					unit_mode);
+		print_filesystem_device(fctx, tmp_dev_info->devid,
+					 tmp_dev_info->total_bytes, tmp_dev_info->bytes_used,
+					 path,
+					 false,
+					 unit_mode);
 
 		free(canonical_path);
+	}
+
+	if (json) {
+		fmt_print_end_group(fctx, "device-list");
+		fmt_print_end_group(fctx, NULL);
 	}
 
 	return 0;
 }
 
-static int btrfs_scan_kernel(void *search, unsigned unit_mode)
+static int btrfs_scan_kernel(struct format_ctx *fctx, void *search, unsigned unit_mode)
 {
 	int ret = 0, fd;
 	int found = 0;
@@ -488,10 +560,10 @@ static int btrfs_scan_kernel(void *search, unsigned unit_mode)
 		fd = open(mnt->mnt_dir, O_RDONLY);
 		if ((fd != -1) && !get_df(fd, &space_info_arg)) {
 			/* Put space between filesystem entries for readability. */
-			if (found != 0)
+			if (found != 0 && bconf.output_format != CMD_FORMAT_JSON)
 				pr_default("\n");
 
-			print_one_fs(&fs_info_arg, dev_info_arg,
+			print_one_fs(fctx, &fs_info_arg, dev_info_arg,
 				     space_info_arg, label, unit_mode);
 			free(space_info_arg);
 			memset(label, 0, sizeof(label));
@@ -755,6 +827,7 @@ static int cmd_filesystem_show(const struct cmd_struct *cmd,
 	LIST_HEAD(all_uuids);
 	struct btrfs_fs_devices *fs_devices;
 	struct btrfs_root *root = NULL;
+	struct format_ctx fctx;
 	char *search = NULL;
 	char *canon_path = NULL;
 	int ret;
@@ -768,6 +841,7 @@ static int cmd_filesystem_show(const struct cmd_struct *cmd,
 	unsigned unit_mode;
 	int found = 0;
 	bool needs_newline = false;
+	bool json = (bconf.output_format == CMD_FORMAT_JSON);
 
 	unit_mode = get_unit_mode_from_arg(&argc, argv, 0);
 
@@ -797,6 +871,11 @@ static int cmd_filesystem_show(const struct cmd_struct *cmd,
 
 	if (check_argc_max(argc, optind + 1))
 		return 1;
+
+	if (json) {
+		fmt_start(&fctx, filesystem_show_data_rowspec, 1, 0);
+		fmt_print_start_group(&fctx, "filesystem-list", JSON_TYPE_ARRAY);
+	}
 
 	if (argc > optind) {
 		search = argv[optind];
@@ -850,7 +929,7 @@ static int cmd_filesystem_show(const struct cmd_struct *cmd,
 	}
 
 	/* show mounted btrfs */
-	ret = btrfs_scan_kernel(search, unit_mode);
+	ret = btrfs_scan_kernel(&fctx, search, unit_mode);
 	if (search && !ret) {
 		/* since search is found we are done */
 		goto out;
@@ -901,10 +980,10 @@ devs_only:
 
 	list_for_each_entry(fs_devices, &all_uuids, fs_list) {
 		/* Put space between filesystem entries for readability. */
-		if (needs_newline)
+		if (needs_newline && !json)
 			pr_default("\n");
 
-		print_one_uuid(fs_devices, unit_mode);
+		print_one_uuid(&fctx, fs_devices, unit_mode);
 		needs_newline = true;
 	}
 
@@ -918,13 +997,21 @@ devs_only:
 		free_fs_devices(fs_devices);
 	}
 out:
+	if (json) {
+		fmt_print_end_group(&fctx, "filesystem-list");
+		fmt_end(&fctx);
+	}
 	free(canon_path);
 	if (root)
 		close_ctree(root);
 	free_seen_fsid(seen_fsid_hash);
 	return !!ret;
 }
-static DEFINE_SIMPLE_COMMAND(filesystem_show, "show");
+#if EXPERIMENTAL
+static DEFINE_COMMAND_WITH_FLAGS(filesystem_show, "show", CMD_FORMAT_JSON);
+#else
+DEFINE_SIMPLE_COMMAND(filesystem_show, "show");
+#endif
 
 static const char * const cmd_filesystem_sync_usage[] = {
 	"btrfs filesystem sync <path>",
