@@ -123,7 +123,13 @@ static int btrfs_create_tree_root(int fd, struct btrfs_mkfs_config *cfg,
 		btrfs_set_item_offset(buf, nritems, itemoff);
 		btrfs_set_item_size(buf, nritems, sizeof(root_item));
 		if (blk == MKFS_FS_TREE) {
-			time_t now = time(NULL);
+			time_t now;
+			char *source_date_epoch;
+			/* This assumes that the SOURCE_DATE_EPOCH environment variable will contain
+			   a correct, positive integer in the time_t range */
+			if ((source_date_epoch = getenv("SOURCE_DATE_EPOCH")) == NULL ||
+			    (now = (time_t)strtoll(source_date_epoch, NULL, 10)) <= 0)
+				time(&now);
 
 			uuid_generate(uuid);
 			memcpy(root_item.uuid, uuid, BTRFS_UUID_SIZE);

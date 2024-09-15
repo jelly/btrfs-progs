@@ -14,6 +14,7 @@
  * Boston, MA 021110-1307, USA.
  */
 
+#include <stdlib.h>
 #include <time.h>
 #include <uuid/uuid.h>
 #include "common/root-tree-utils.h"
@@ -26,7 +27,13 @@ int btrfs_make_root_dir(struct btrfs_trans_handle *trans,
 {
 	int ret;
 	struct btrfs_inode_item inode_item;
-	time_t now = time(NULL);
+	char *source_date_epoch;
+	time_t now;
+	/* This assumes that the SOURCE_DATE_EPOCH environment variable will contain
+	   a correct, positive integer in the time_t range */
+	if ((source_date_epoch = getenv("SOURCE_DATE_EPOCH")) == NULL ||
+	    (now = (time_t)strtoll(source_date_epoch, NULL, 10)) <= 0)
+		time(&now);
 
 	memset(&inode_item, 0, sizeof(inode_item));
 	btrfs_set_stack_inode_generation(&inode_item, trans->transid);
