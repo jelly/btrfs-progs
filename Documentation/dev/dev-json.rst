@@ -41,6 +41,7 @@ Keys and formatting are defined as an array of *struct rowspec*.
    * formatted by the types if possible
    * any *printf* format is possible but should be avoided or a new type should
      be defined
+   * omit the key if it would emit a sentinel value (e.g. "none", -1)
 * printing more data about an item is better than printing less, assuming the
   filtering is done on the user side
 * structure of json output may not reflect the way it's printed in plain text,
